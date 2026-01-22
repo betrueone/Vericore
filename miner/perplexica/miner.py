@@ -130,6 +130,8 @@ class Miner:
         Calls Perplexica. Returns a list of (url, snippet) with no XPATH offsets.
         """
         bt.logging.info(f"{synapse.request_id} | Received Vericore request ")
+        bt.logging.info(f"Received Vericore request from {synapse.dendrite.hotkey}")
+        bt.logging.info(f"synapse: {synapse}")
         statement = synapse.statement
         bt.logging.info(f"{synapse.request_id} | Calling perplexica ")
         results = self.call_perplexica(statement)
@@ -138,6 +140,7 @@ class Miner:
             synapse.veridex_response = []
             return synapse
 
+        bt.logging.info(f"results: {results}")
         final_evidence = []
         for item in results:
             url = item.get("url", "").strip()
@@ -215,14 +218,14 @@ Response MUST returned as a json array. If it isn't returned as json object the 
             try:
                 response_data = response.json()  # Convert response to JSON
             except json.JSONDecodeError:
-                bt.logging.warn(f"Perplexica returned an invalid JSON response: {response.text}")
+                bt.logging.warning(f"Perplexica returned an invalid JSON response: {response.text}")
                 return []
 
             bt.logging.trace(f"Parsed json response data")
 
             # Check whether message exists
             if "message" not in response_data or not response_data["message"]:
-                bt.logging.warn(f"Perplexica returned no message: {response_data}")
+                bt.logging.warning(f"Perplexica returned no message: {response_data}")
                 return []
 
             raw_text = response_data["message"].strip()
@@ -233,7 +236,7 @@ Response MUST returned as a json array. If it isn't returned as json object the 
             bt.logging.trace(f"Cleaned up json message and parsed json object")
 
             if not isinstance(data, list):
-                bt.logging.warn(f"Perplexica response is not a list: {data}")
+                bt.logging.warning(f"Perplexica response is not a list: {data}")
                 return []
             return data
         except requests.exceptions.RequestException as e:
