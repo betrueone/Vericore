@@ -52,8 +52,11 @@ class VericoreStatementResponse():
   page_text: str = ""
   assessment_result: dict = field(default_factory=dict)
   verify_miner_time_taken_secs: float=0
-  fetch_page_time_taken_secs: float=0
+  fetch_page_time_taken_secs: float=0  # Legacy: end-to-end fetch step time; prefer snippet_fetcher_* for breakdown
   assess_statement_time_taken_secs: float=0
+  snippet_fetcher_http_time_secs: float = -1  # HTTP request time from snippet fetcher; -1 if NA
+  snippet_fetcher_selenium_time_secs: float = -1  # Selenium fallback time from snippet fetcher; -1 if NA
+  snippet_fetcher_total_time_secs: float = -1  # Total snippet fetcher time (http + selenium when both used); -1 if NA
   sentiment: float = 0.0
   conviction: float = 0.0
   source_credibility: float = 0.0
@@ -72,6 +75,13 @@ class VericoreMinerStatementResponse():
   raw_score: float = 0
   final_score: float = 0
   elapsed_time: float = 0
+  # Performance stats (aggregated across all snippets)
+  total_fetch_time_secs: float = 0
+  total_ai_time_secs: float = 0
+  total_other_time_secs: float = 0
+  avg_snippet_time_secs: float = 0
+  max_snippet_time_secs: float = 0
+  snippet_count: int = 0
 
 @dataclass
 class VericoreQueryResponse():
@@ -81,6 +91,14 @@ class VericoreQueryResponse():
   request_id: str
   statement: str
   sources: list
-  timestamp: float =0
+  timestamp: float = 0
   total_elapsed_time: float = 0
   results: typing.List["VericoreMinerStatementResponse"] = field(default_factory=list)
+  # Performance stats (aggregated across all miners/snippets)
+  total_fetch_time_secs: float = 0
+  total_ai_time_secs: float = 0
+  total_other_time_secs: float = 0
+  avg_snippet_time_secs: float = 0
+  max_snippet_time_secs: float = 0
+  total_snippet_count: int = 0
+  miner_count: int = 0

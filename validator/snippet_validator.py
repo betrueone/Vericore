@@ -90,18 +90,19 @@ class SnippetValidator:
 
         return parse_qs(query_string)
 
-    async def _fetch_page_text(self, request_id:str, miner_uid: int, url: str) -> str:
+    async def _fetch_page_text(self, request_id: str, miner_uid: int, url: str) -> tuple[str, float | str, float | str]:
+        """Returns (page_text, http_time_secs, selenium_time_secs). Times are float or 'NA'."""
         try:
-            page_html = await fetch_entire_page(request_id, miner_uid, url)
+            page_html, http_time_secs, selenium_time_secs = await fetch_entire_page(request_id, miner_uid, url)
 
             if page_html is None:
-                return ""
+                return ("", "NA", "NA")
 
-            return page_html
+            return (page_html, http_time_secs, selenium_time_secs)
 
         except Exception as e:
             bt.logging.error(f"{request_id} | {miner_uid} | Error fetching page text in rendered page: {e}")
-            return ""
+            return ("", "NA", "NA")
 
 
     async def is_snippet_similar_to_statement(
@@ -414,7 +415,7 @@ class SnippetValidator:
                     local_score=0.0,
                     snippet_score=snippet_score,
                     snippet_score_reason="ssl_url_required",
-                    verify_miner_time_taken_secs=time.time() - start_time
+                    verify_miner_time_taken_secs=time.perf_counter() - start_time
                 )
                 return vericore_miner_response
 
@@ -453,7 +454,7 @@ class SnippetValidator:
                     local_score=0.0,
                     snippet_score=snippet_score,
                     snippet_score_reason="no_snippet_provided",
-                    verify_miner_time_taken_secs=time.time() - start_time
+                    verify_miner_time_taken_secs=time.perf_counter() - start_time
                 )
                 return vericore_miner_response
 
@@ -468,7 +469,7 @@ class SnippetValidator:
                     local_score=0.0,
                     snippet_score=snippet_score,
                     snippet_score_reason="snippet_same_as_statement",
-                    verify_miner_time_taken_secs=time.time() - start_time
+                    verify_miner_time_taken_secs=time.perf_counter() - start_time
                 )
                 return vericore_miner_response
 
@@ -483,7 +484,7 @@ class SnippetValidator:
                     local_score=0.0,
                     snippet_score=snippet_score,
                     snippet_score_reason="invalid_excerpt",
-                    verify_miner_time_taken_secs=time.time() - start_time
+                    verify_miner_time_taken_secs=time.perf_counter() - start_time
                 )
 
             bt.logging.info(f"{request_id} | {miner_uid} | {miner_evidence.url} | Is snippet in same context as statement")
@@ -505,7 +506,7 @@ class SnippetValidator:
                     snippet_score=snippet_score,
                     snippet_score_reason="excerpt_too_similar",
                     statement_similarity_score=statement_similarity_score,
-                    verify_miner_time_taken_secs=time.time() - start_time
+                    verify_miner_time_taken_secs=time.perf_counter() - start_time
                 )
 
             bt.logging.info(
@@ -513,13 +514,30 @@ class SnippetValidator:
             )
 
             # Fetch page text
-            fetch_page_start_time = time.time()
-            page_text = await self._fetch_page_text(request_id, miner_uid, miner_evidence.url)
-            fetch_page_time_taken_secs = time.time() - fetch_page_start_time
+            fetch_page_start_time = time.perf_counter()
+            page_text, http_time_secs, selenium_time_secs = await self._fetch_page_text(request_id, miner_uid, miner_evidence.url)
+            fetch_page_time_taken_secs = time.perf_counter() - fetch_page_start_time
+
+            def _time_or_neg_one(x):
+                """Return seconds as float, or -1 if not available (e.g. 'NA')."""
+                return x if isinstance(x, (int, float)) else -1
+
+            def _snippet_fetcher_times(http_time, selenium_time):
+                http_secs = _time_or_neg_one(http_time)
+                selenium_secs = _time_or_neg_one(selenium_time)
+                total_secs = -1
+                if http_secs >= 0 and selenium_secs >= 0:
+                    total_secs = http_secs + selenium_secs
+                elif http_secs >= 0:
+                    total_secs = http_secs
+                elif selenium_secs >= 0:
+                    total_secs = selenium_secs
+                return http_secs, selenium_secs, total_secs
 
             # Could not extract page text from url
             if page_text == '':
                 snippet_score = COULD_NOT_GET_PAGE_TEXT_FROM_URL
+                http_secs, selenium_secs, total_secs = _snippet_fetcher_times(http_time_secs, selenium_time_secs)
                 vericore_miner_response = VericoreStatementResponse(
                     url=miner_evidence.url,
                     excerpt=miner_evidence.excerpt,
@@ -528,13 +546,17 @@ class SnippetValidator:
                     local_score=0.0,
                     snippet_score=snippet_score,
                     snippet_score_reason="could_not_extract_html_from_url",
-                    verify_miner_time_taken_secs=time.time() - start_time,
-                    fetch_page_time_taken_secs=fetch_page_time_taken_secs
+                    verify_miner_time_taken_secs=time.perf_counter() - start_time,
+                    fetch_page_time_taken_secs=fetch_page_time_taken_secs,
+                    snippet_fetcher_http_time_secs=http_secs,
+                    snippet_fetcher_selenium_time_secs=selenium_secs,
+                    snippet_fetcher_total_time_secs=total_secs
                 )
                 return vericore_miner_response
 
             if is_search_web_page(page_text):
                 snippet_score = IS_SEARCH_WEB_PAGE
+                http_secs, selenium_secs, total_secs = _snippet_fetcher_times(http_time_secs, selenium_time_secs)
                 return VericoreStatementResponse(
                     url=miner_evidence.url,
                     excerpt=miner_evidence.excerpt,
@@ -543,15 +565,18 @@ class SnippetValidator:
                     local_score=0.0,
                     snippet_score=snippet_score,
                     snippet_score_reason="is_search_web_page",
-                    verify_miner_time_taken_secs=time.time() - start_time,
-                    fetch_page_time_taken_secs=fetch_page_time_taken_secs
+                    verify_miner_time_taken_secs=time.perf_counter() - start_time,
+                    fetch_page_time_taken_secs=fetch_page_time_taken_secs,
+                    snippet_fetcher_http_time_secs=http_secs,
+                    snippet_fetcher_selenium_time_secs=selenium_secs,
+                    snippet_fetcher_total_time_secs=total_secs
                 )
 
             bt.logging.info(
                 f"{request_id} | {miner_uid} | {miner_evidence.url} | Verifying snippet in rendered page"
             )
 
-            assess_statement_start_time = time.time()
+            assess_statement_start_time = time.perf_counter()
             assessment_result = await assess_statement_async(
                 request_id=request_id,
                 miner_uid=miner_uid,
@@ -560,7 +585,7 @@ class SnippetValidator:
                 webpage=page_text,
                 miner_excerpt=miner_evidence.excerpt,
             )
-            assess_statement_time_taken_secs = time.time()- assess_statement_start_time
+            assess_statement_time_taken_secs = time.perf_counter() - assess_statement_start_time
 
             bt.logging.info(
                 f"{request_id} | {miner_uid} | {miner_evidence.url} | Assessment Result: {assessment_result}"
@@ -571,6 +596,7 @@ class SnippetValidator:
 
                 if snippet_result == "UNRELATED":
                     snippet_score = UNRELATED_PAGE_SNIPPET
+                    http_secs, selenium_secs, total_secs = _snippet_fetcher_times(http_time_secs, selenium_time_secs)
                     return VericoreStatementResponse(
                         url=miner_evidence.url,
                         excerpt=miner_evidence.excerpt,
@@ -581,12 +607,16 @@ class SnippetValidator:
                         snippet_score_reason="unrelated_page_snippet",
                         rejection_reason = assessment_result.get("reason"),
                         assessment_result = assessment_result,
-                        verify_miner_time_taken_secs=time.time() - start_time,
+                        verify_miner_time_taken_secs=time.perf_counter() - start_time,
                         fetch_page_time_taken_secs=fetch_page_time_taken_secs,
-                        assess_statement_time_taken_secs=assess_statement_time_taken_secs
+                        assess_statement_time_taken_secs=assess_statement_time_taken_secs,
+                        snippet_fetcher_http_time_secs=http_secs,
+                        snippet_fetcher_selenium_time_secs=selenium_secs,
+                        snippet_fetcher_total_time_secs=total_secs
                     )
                 elif snippet_result == "FAKE":
                     snippet_score = FAKE_SNIPPET
+                    http_secs, selenium_secs, total_secs = _snippet_fetcher_times(http_time_secs, selenium_time_secs)
                     return VericoreStatementResponse(
                         url=miner_evidence.url,
                         excerpt=miner_evidence.excerpt,
@@ -597,12 +627,16 @@ class SnippetValidator:
                         snippet_score_reason="fake_page_snippet",
                         assessment_result=assessment_result,
                         rejection_reason = assessment_result.get("reason"),
-                        verify_miner_time_taken_secs=time.time() - start_time,
+                        verify_miner_time_taken_secs=time.perf_counter() - start_time,
                         fetch_page_time_taken_secs=fetch_page_time_taken_secs,
-                        assess_statement_time_taken_secs=assess_statement_time_taken_secs
+                        assess_statement_time_taken_secs=assess_statement_time_taken_secs,
+                        snippet_fetcher_http_time_secs=http_secs,
+                        snippet_fetcher_selenium_time_secs=selenium_secs,
+                        snippet_fetcher_total_time_secs=total_secs
                     )
                 elif is_search_url:
                     snippet_score = IS_SEARCH_WEB_PAGE
+                    http_secs, selenium_secs, total_secs = _snippet_fetcher_times(http_time_secs, selenium_time_secs)
                     return VericoreStatementResponse(
                         url=miner_evidence.url,
                         excerpt=miner_evidence.excerpt,
@@ -613,9 +647,12 @@ class SnippetValidator:
                         assessment_result=assessment_result,
                         snippet_score_reason="is_search_web_page",
                         rejection_reason = assessment_result.get("reason"),
-                        verify_miner_time_taken_secs=time.time() - start_time,
+                        verify_miner_time_taken_secs=time.perf_counter() - start_time,
                         fetch_page_time_taken_secs=fetch_page_time_taken_secs,
-                        assess_statement_time_taken_secs=assess_statement_time_taken_secs
+                        assess_statement_time_taken_secs=assess_statement_time_taken_secs,
+                        snippet_fetcher_http_time_secs=http_secs,
+                        snippet_fetcher_selenium_time_secs=selenium_secs,
+                        snippet_fetcher_total_time_secs=total_secs
                     )
 
             # Verify that the snippet is actually within the provided url
@@ -631,6 +668,7 @@ class SnippetValidator:
             # Snippet was not found from the provided url:
             if not snippet_found:
                 snippet_score = SNIPPET_NOT_VERIFIED_IN_URL
+                http_secs, selenium_secs, total_secs = _snippet_fetcher_times(http_time_secs, selenium_time_secs)
                 vericore_miner_response = VericoreStatementResponse(
                     url=miner_evidence.url,
                     excerpt=miner_evidence.excerpt,
@@ -641,9 +679,12 @@ class SnippetValidator:
                     snippet_score_reason="snippet_not_verified_in_url",
                     assessment_result=assessment_result,
                     page_text=page_text if DEBUG_LOCAL else "",
-                    verify_miner_time_taken_secs = time.time() - start_time,
+                    verify_miner_time_taken_secs = time.perf_counter() - start_time,
                     fetch_page_time_taken_secs=fetch_page_time_taken_secs,
-                    assess_statement_time_taken_secs=assess_statement_time_taken_secs
+                    assess_statement_time_taken_secs=assess_statement_time_taken_secs,
+                    snippet_fetcher_http_time_secs=http_secs,
+                    snippet_fetcher_selenium_time_secs=selenium_secs,
+                    snippet_fetcher_total_time_secs=total_secs
                 )
                 return vericore_miner_response
 
@@ -679,8 +720,9 @@ class SnippetValidator:
                 snippet=miner_evidence.excerpt
             )
 
-            end_time = time.time()
+            end_time = time.perf_counter()
             signals = self._extract_assessment_signals(assessment_result) if assessment_result else self._extract_assessment_signals({})
+            http_secs, selenium_secs, total_secs = _snippet_fetcher_times(http_time_secs, selenium_time_secs)
             vericore_miner_response = VericoreStatementResponse(
                 url=miner_evidence.url,
                 excerpt=miner_evidence.excerpt,
@@ -706,15 +748,21 @@ class SnippetValidator:
                 political_leaning=signals["political_leaning"],
                 verify_miner_time_taken_secs=end_time - start_time,
                 fetch_page_time_taken_secs=fetch_page_time_taken_secs,
-                assess_statement_time_taken_secs=assess_statement_time_taken_secs
+                assess_statement_time_taken_secs=assess_statement_time_taken_secs,
+                snippet_fetcher_http_time_secs=http_secs,
+                snippet_fetcher_selenium_time_secs=selenium_secs,
+                snippet_fetcher_total_time_secs=total_secs
             )
+            total_time = end_time - start_time
+            other_time = total_time - fetch_page_time_taken_secs - assess_statement_time_taken_secs
             bt.logging.info(
-                f"{request_id} | {miner_uid} | {miner_evidence.url} | Finished verifying miner snippet at {end_time} (Duration: {end_time - start_time})"
+                f"{request_id} | {miner_uid} | {miner_evidence.url} | Finished verifying miner snippet | "
+                f"Total: {total_time:.3f}s | Fetch: {fetch_page_time_taken_secs:.3f}s | AI: {assess_statement_time_taken_secs:.3f}s | Other: {other_time:.3f}s"
             )
 
             return vericore_miner_response
         except Exception as e:
-            end_time = time.time()
+            end_time = time.perf_counter()
             bt.logging.error(
                 f"{request_id} | {miner_uid} | Error fetching miner snippet {e}"
             )

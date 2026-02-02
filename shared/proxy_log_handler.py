@@ -4,17 +4,19 @@ import logging
 import requests
 import os
 import json
+import datetime
 import bittensor as bt
 from shared.log_data import LoggerType, JSONFormatter
 
 MAX_LOG_SIZE = 500
+ENABLE_FILE_LOGGING = os.environ.get("ENABLE_FILE_LOGGING", "false").lower() == "true"
 
 proxy_handler = None
 
 def register_proxy_log_handler(logger, logger_type: LoggerType, wallet):
     enable_logging = os.environ.get("ENABLE_PROXY_LOGGING", "true").lower() == "true"
 
-    bt.logging.info(f"Logging enabled:  {enable_logging}")
+    bt.logging.info(f"Logging enabled: {enable_logging} | File logging enabled: {ENABLE_FILE_LOGGING}")
 
     if not enable_logging:
         return
@@ -47,6 +49,23 @@ class ProxyLogHandler(logging.Handler):
 
 
     def send_log(self, log_entries: []):
+        # Write to file first, independently of proxy request success/failure
+        if ENABLE_FILE_LOGGING:
+            try:
+                log_dir = f"logs/{self.logger_type.value}"
+                os.makedirs(log_dir, exist_ok=True)
+                # Use microsecond precision and append mode to prevent data loss
+                # if send_log is called multiple times within the same time window
+                timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+                file_path = f"{log_dir}/{timestamp}.log"
+                with open(file_path, 'a') as f:
+                    for entry in log_entries:
+                        f.write(json.dumps(entry) + '\n')
+            except Exception as e:
+                # File logging should not disrupt the main logging flow
+                # Catches I/O errors, JSON serialization errors (TypeError), and any other unexpected exceptions
+                print(f"Failed to write log to file: {e}")
+
         try:
             #add signature
             message = f"{self.wallet.hotkey.ss58_address}.{len(log_entries)}.logger"
